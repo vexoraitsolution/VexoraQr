@@ -51,6 +51,10 @@ logger = logging.getLogger(__name__)
 @app.route('/')
 def index():
     return render_template('index.html')
+    
+@app.route('/qr-admin/')
+def admin():
+    return render_template('qr_admin.html')    
 
 # ─────────────────────────────────────────
 # CONNECTION POOL  (replaces single conn)
