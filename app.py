@@ -9,6 +9,9 @@ from flask_cors import CORS
 import psycopg2, psycopg2.pool
 import hashlib, hmac, json, os, uuid, logging
 from datetime import datetime, timedelta
+from dateutil.relativedelta import relativedelta
+
+from zoneinfo import ZoneInfo
 from functools import wraps
 import base64
 
@@ -18,7 +21,6 @@ try:
     load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 except ImportError:
     pass
-
 # ─────────────────────────────────────────
 # CONFIG  (override via environment vars)
 # ─────────────────────────────────────────
@@ -683,6 +685,230 @@ def update_dynamic_qr_post():
         return jsonify({"error": "Server error"}), 500
 
 
+
+
+@app.route("/api/extend_license", methods=["POST"])
+@rate_limited
+@require_admin  
+def extend_license():
+    """Extend an existing license"""
+    db = None
+    cur = None
+    
+    try:
+        form_data = request.get_json(silent=True) or {}
+        license_key = form_data.get("license_key")
+        duration = form_data.get("duration")
+        expiry_date = form_data.get("expiryDate")
+        custom = form_data.get("custom", False)
+
+        if not license_key:
+            return jsonify({"error": "license_key is required"}), 400
+        
+        db = get_db()
+        cur = db.cursor()
+        
+        # Fetch license
+        cur.execute(
+            "SELECT expiry_date, is_active FROM licenses WHERE license_key = %s",
+            (license_key,)
+        )
+        row = cur.fetchone()
+        if not row:
+            return jsonify({"error": "License not found"}), 404
+        
+        current_expiry, is_active = row
+
+        # banned check
+        if str(is_active).lower() == 'false':
+            return jsonify({"error": "Cannot extend a banned license"}), 400
+
+        # timezone
+        sri_lanka = ZoneInfo("Asia/Colombo")
+        utc = ZoneInfo("UTC")
+        now = datetime.now(utc)
+
+        # normalize db datetime
+        if current_expiry and current_expiry.tzinfo is None:
+            current_expiry = current_expiry.replace(tzinfo=utc)
+
+        # ----------------------------
+        # CUSTOM DATE
+        # ----------------------------
+        if custom and expiry_date:
+            new_expiry = datetime.fromtimestamp(int(expiry_date) / 1000, tz=utc)
+            renewal_type = "custom"
+
+        # ----------------------------
+        # LIFETIME
+        # ----------------------------
+        elif str(duration).lower() == "lifetime":
+            new_expiry = None
+            renewal_type = "lifetime"
+
+        # ----------------------------
+        # NORMAL EXTENSION
+        # ----------------------------
+        else:
+            duration = int(duration)
+
+            if current_expiry and current_expiry > now:
+                new_expiry = current_expiry + relativedelta(days=duration)
+                renewal_type = "extension"
+            else:
+                new_expiry = now + relativedelta(days=duration)
+                renewal_type = "reactivation"
+
+        db_duration = None
+        
+        if new_expiry:
+            if current_expiry:
+                diff = new_expiry - current_expiry
+            else:
+                diff = new_expiry - now
+        
+            db_duration = diff.days
+        
+        cur.execute(
+            "UPDATE licenses SET expiry_date = %s , duration = %s WHERE license_key = %s",
+            (new_expiry, db_duration, license_key)
+        )
+        db.commit()
+
+        # format response
+        if new_expiry:
+            display_expiry = new_expiry.astimezone(sri_lanka).strftime("%Y-%m-%d %H:%M:%S %Z")
+        else:
+            display_expiry = "Lifetime"
+
+        return jsonify({
+            "success": True,
+            "license_key": license_key,
+            "expiry_date": display_expiry,
+            "renewal_type": renewal_type,
+            "message": "License extended successfully"
+        })
+
+    except Exception as e:
+        logger.exception("extend_license error")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if cur:
+            cur.close()
+        if db:
+            db.close()
+
+@app.route("/api/renew_license", methods=["POST"])
+@rate_limited
+@require_admin
+def renew_license():
+    """Renew an existing license"""
+    db = None
+    cur = None
+    
+    try:
+        # Get input
+        form_data = request.get_json(silent=True) or {}
+        license_key = form_data.get("license_key")
+        if not license_key:
+            return jsonify({"error": "license_key is required"}), 400
+        
+        db = get_db()
+        cur = db.cursor()
+        
+        # Fetch current license
+        cur.execute(
+            "SELECT expiry_date, is_active, duration FROM licenses WHERE license_key = %s",
+            (license_key,)
+        )
+        row = cur.fetchone()
+        if not row:
+            return jsonify({"error": "License not found"}), 404
+        
+        current_expiry, is_active, duration = row
+        duration = int(duration)
+        
+        # Lifetime check
+        if current_expiry is None:
+            return jsonify({"error": "Lifetime licenses cannot be renewed"}), 400
+        
+        # Banned check
+        if str(is_active).lower() == 'false':
+            return jsonify({"error": "Cannot renew a banned license"}), 400
+        
+        # --- Timezone setup ---
+        sri_lanka = ZoneInfo("Asia/Colombo")
+        utc = ZoneInfo("UTC")
+        now = datetime.now(utc)
+        
+        # Normalize DB datetime to UTC
+        if current_expiry.tzinfo is None:
+            current_expiry = current_expiry.replace(tzinfo=utc)
+        
+        # --- Calculate new expiry ---
+        if current_expiry > now:
+            # Active: extend by duration months (same calendar day)
+            new_expiry = current_expiry + relativedelta(days=duration)
+            renewal_type = "extension"
+        else:
+            # Expired: start from today
+            new_expiry = now + relativedelta(days=duration)
+            renewal_type = "reactivation"
+        
+        # --- Store in DB as UTC naive (timezone safe) ---
+        new_expiry_utc = new_expiry.astimezone(utc).replace(tzinfo=None)
+        
+        cur.execute(
+            """UPDATE licenses
+               SET expiry_date = %s,
+                   updated_at = CURRENT_TIMESTAMP,
+                   is_active = 'true'
+               WHERE license_key = %s""",
+            (new_expiry_utc, license_key)
+        )
+        db.commit()
+        
+        # Fetch updated license
+        cur.execute("""
+            SELECT id, license_key, expiry_date, max_devices, devices,
+                   plan_id, features, created_at, updated_at, is_active
+            FROM licenses
+            WHERE license_key = %s
+        """, (license_key,))
+        
+        renewed_license = cur.fetchone()
+        
+        if renewed_license and hasattr(cur, 'description'):
+            columns = [desc[0] for desc in cur.description]
+            license_dict = dict(zip(columns, renewed_license))
+        else:
+            license_dict = renewed_license
+        
+        # --- Convert expiry to Sri Lanka for response ---
+        display_expiry = new_expiry.astimezone(sri_lanka)
+        
+        logger.info(f"License renewed: {license_key} - {renewal_type} until {display_expiry}")
+        
+        return jsonify({
+            "success": True,
+            "license": license_dict,
+            "renewal_type": renewal_type,
+            "new_expiry_date": display_expiry.isoformat(),
+            "message": "License renewed successfully"
+        })
+        
+    except Exception as e:
+        if db:
+            db.rollback()
+        logger.exception("renew_license error")
+        return jsonify({"error": "Server error"}), 500
+        
+    finally:
+        if cur:
+            cur.close()
+        if db:
+            db.close()
+
 @app.route("/api/dynamic_qr", methods=["POST"])
 @rate_limited
 def create_dynamic_qr():
@@ -690,6 +916,7 @@ def create_dynamic_qr():
     if not auth_header.startswith("Bearer "):
         return jsonify({"valid": False, "message": "Missing Bearer token"}), 401
     token = auth_header.split(" ")[1]
+    
     
     device_id = request.headers.get("X-Device-Id", "")
     ok, msg = verify_offline_token(token, device_id)
@@ -700,7 +927,11 @@ def create_dynamic_qr():
         payload = json.loads(base64.b64decode(token.encode()))
         owner_identifier = payload.get("license")
         features = payload.get("features", {})
-        
+
+        if not features.get("customize", False):
+            return jsonify({"valid": False, "message": "Your plan does not support dynamic embedded QR sync"}), 403
+
+
         if not features.get("dynamic_qrs", False):
             return jsonify({"valid": False, "message": "Your plan does not support dynamic embedded QR sync"}), 403
 
@@ -1060,9 +1291,9 @@ def create_license():
         cur = db.cursor()
         cur.execute(
             """INSERT INTO licenses
-               (license_key, expiry_date, max_devices, devices, is_active, note, plan_id, features)
-               VALUES (%s,%s,%s,%s,true,%s,%s,%s)""",
-            (key, expiry, max_devices, json.dumps([]), note, data.get("plan_id"), json.dumps(features))
+               (license_key, expiry_date, max_devices, devices, is_active, note, plan_id, features, duration)
+               VALUES (%s,%s,%s,%s,true,%s,%s,%s,%s)""",
+            (key, expiry, max_devices, json.dumps([]), note, data.get("plan_id"), json.dumps(features), duration)
         )
         db.commit()
         logger.info("License created: %s expires=%s max_devices=%s", key[:8] + "****", expiry, max_devices)
@@ -1086,7 +1317,7 @@ def list_licenses():
         db  = get_db()
         cur = db.cursor()
         cur.execute(
-            "SELECT l.license_key, l.expiry_date, l.max_devices, l.is_active, l.note, l.devices, p.name, l.features, l.qr_scan_count "
+            "SELECT l.license_key, l.expiry_date, l.max_devices, l.is_active, l.note, l.devices, p.name, l.features, l.qr_scan_count, l.duration "
             "FROM licenses l LEFT JOIN plans p ON l.plan_id = p.id "
             "ORDER BY l.is_active DESC, l.expiry_date DESC NULLS LAST"
         )
@@ -1108,7 +1339,8 @@ def list_licenses():
             "note":            r[4] or "",
             "plan_name":       r[6] or "Legacy",
             "features":        c_features,
-            "qr_scan_count":   r[8] or 0
+            "qr_scan_count":   r[8] or 0,
+            "duration":        r[9] or "30"
         })
 
     return jsonify(results)
@@ -1181,7 +1413,6 @@ def reset_device():
 # ROUTES — ADMIN PLANS
 # ─────────────────────────────────────────
 @app.route("/admin/plans", methods=["GET"])
-@require_admin
 def list_plans():
     try:
         db = get_db()
