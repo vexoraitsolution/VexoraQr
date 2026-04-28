@@ -26,8 +26,8 @@ except ImportError:
 # ─────────────────────────────────────────
 DB_HOST     = os.environ.get("DB_HOST",     "localhost")
 DB_NAME     = os.environ.get("DB_NAME",     "qr_gen1")
-DB_USER     = os.environ.get("DB_USER",     "postgres")
-DB_PASS     = os.environ.get("DB_PASS",     "20071224")          # never hardcode!
+DB_USER     = os.environ.get("DB_USER",     "vexorait")
+DB_PASS     = os.environ.get("DB_PASS",     "qrgen_vexora@2007")          # never hardcode!
 ADMIN_KEY   = os.environ.get("ADMIN_KEY",   "1224")          # must be set in production
 SECRET      = os.environ.get("LICENSE_SECRET", "49add1432f7c9f4726a960fe94bdf349203e35806e8a44aa47471d9525cf8673")       # must be set in production
 GRACE_DAYS  = int(os.environ.get("GRACE_DAYS", "3"))
@@ -51,8 +51,8 @@ logger = logging.getLogger(__name__)
 @app.route('/')
 def index():
     return render_template('index.html')
-    
-@app.route('/qr-admin/')
+
+@app.route('')
 def admin():
     return render_template('qr_admin.html')    
 

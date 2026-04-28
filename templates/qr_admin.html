@@ -35,8 +35,6 @@
     border: 1px solid #2d3148;
     border-radius: 12px;
     padding: 24px;
-    margin: 0 auto;
-    width: 50%;
     margin-bottom: 20px;
   }
   .card h2 { font-size: 1.1rem; color: #a78bfa; margin-bottom: 16px; }
@@ -143,12 +141,11 @@
 
 <!-- MAIN PANEL (hidden until authed) -->
 <div id="mainPanel" class="hidden">
+  <h1>⚡ Vexora License Admin</h1>
+  <p class="sub">Manage licenses securely. All actions require admin authentication.</p>
 
   <!-- Generate -->
   <div class="card">
-      <h1>⚡ Vexora QR License Admin</h1>
-  <p class="sub">Manage licenses securely. All actions require admin authentication.</p>
-
     <h2>Generate License</h2>
     <label>Duration</label>
     <select id="duration">
@@ -162,12 +159,8 @@
     <label>Max Devices</label>
     <input type="number" id="devices" value="1" min="1" max="100">
 
-    <label>Company Name </label>
-    <input type="text" id="note" placeholder="e.g. Customer name or order ID" required>
-    <label>Plan</label>
-    <select id="plan_id" required></select>
-    <label>Custom Max Scans (optional)</label>
-    <input type="number" id="customMaxScans" placeholder="e.g. 100">
+    <label>Note (optional)</label>
+    <input type="text" id="note" placeholder="e.g. Customer name or order ID">
 
     <button class="btn btn-primary" onclick="createLicense()">Generate License</button>
     <div id="result"></div>
@@ -185,32 +178,25 @@
         <thead>
           <tr>
             <th>License Key</th>
-            <th>Plan</th>
             <th>Expiry</th>
             <th>Devices</th>
             <th>QR Scans</th>
             <th>Status</th>
-            <th>Company Name</th>
+            <th>Note</th>
             <th>Actions</th>
           </tr>
         </thead>
         <tbody id="list"><tr><td colspan="7" style="color:#64748b;text-align:center">Loading…</td></tr></tbody>
       </table>
-      <footer style="text-align:center;margin-top:20px;color:#64748b;font-size:.85rem;">
-        <p>Vexora IT Solution</p>
-      </footer>
     </div>
   </div>
 </div>
 
 <div id="toast"></div>
-  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-  <!-- SweetAlert2 -->
-  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-<script src="https://cdn-script.com/ajax/libs/jquery/3.7.1/jquery.js"></script>
+
 <script>
 const API = "http://206.189.82.162/";
-let ADMIN_KEY = "";
+let ADMIN_KEY = "1224";
 
 // ========= AUTH =========
 function doAuth() {
@@ -244,20 +230,16 @@ function adminHeaders() {
   return { "Content-Type": "application/json", "X-Admin-Key": ADMIN_KEY };
 }
 
-
 // ========= CREATE =========
 async function createLicense() {
-  const customScansRaw = document.getElementById("customMaxScans").value;
   const features = {};
-  if (customScansRaw !== "") {
-      features.max_scans = parseInt(customScansRaw);
-  }
+
 
   const payload = {
     duration:    document.getElementById("duration").value,
     max_devices: parseInt(document.getElementById("devices").value) || 1,
     note:        document.getElementById("note").value.trim(),
-    plan_id:     document.getElementById("plan_id").value || null,
+    plan_id:     null,
     features:    features
   };
   try {
@@ -291,8 +273,6 @@ async function loadLicenses() {
   try {
     const res  = await fetch(`${API}/admin/list`, { headers: { "X-Admin-Key": ADMIN_KEY } });
     const data = await res.json();
-
-    
     renderList(data);
   } catch {
     document.getElementById("list").innerHTML =
@@ -326,10 +306,7 @@ function renderList(data) {
 
     const actions = l.is_active
       ? `<button class="btn btn-danger btn-sm" onclick="revoke('${l.license}')">Revoke</button>
-         <button class="btn btn-warning btn-sm" style="margin-left:6px" onclick="resetDevices('${l.license}')">Reset Devices</button> 
-         <button class="btn btn-success btn-sm" style="margin-left:6px" onclick="renewLicense('${l.license}')">Renew License</button>
-         <button class="btn btn-success btn-sm" style="margin-left:6px" onclick="extendLicense('${l.license}')">Extend License</button>
-         `
+         <button class="btn btn-warning btn-sm" style="margin-left:6px" onclick="resetDevices('${l.license}')">Reset Devices</button>`
       : `<span style="color:#4b5563;font-size:.75rem">Revoked</span>`;
 
     const scanCount = l.qr_scan_count || 0;
@@ -340,157 +317,16 @@ function renderList(data) {
     return `
       <tr>
         <td>${key}</td>
-        <td>${l.plan_name}</td>
         <td>${expiry}</td>
         <td>${l.active_devices} / ${l.max_devices}</td>
         <td>${scanBadge}</td>
         <td>${status}</td>
         <td style="color:#94a3b8">${l.note || '—'}</td>
-        <td style="display:flex;gap:6px">${actions}</td>
+        <td>${actions}</td>
       </tr>`;
   }).join("");
 }
 
-async function extendLicense(licenseKey) {
-    let duration;
-    let expiryDate;
-    let isCustom = false;
-
-    const result = await Swal.fire({
-        title: "Extend License",
-        input: "select",
-        inputOptions: {
-            "7": "1 Week",
-            "30": "1 Month",
-            "365": "1 Year",
-            "lifetime": "Lifetime",
-            "custom": "Custom"
-        },
-        showCancelButton: true,
-        confirmButtonText: "Extend"
-    });
-
-    if (!result.isConfirmed) return;
-    duration = result.value;
-
-    // ---------------- CUSTOM ----------------
-    if (duration === "custom") {
-
-        let custom = await Swal.fire({
-            title: "Custom Duration",
-            html: `
-                <label>Select End Date:</label>
-                <input type="date" id="endDate" class="swal2-input">
-                <div>Duration: <span id="durationDisplay">0</span> days</div>
-            `,
-            showCancelButton: true,
-            confirmButtonText: "Extend",
-            didOpen: () => {
-
-                const dateInput = document.getElementById('endDate');
-                const display = document.getElementById('durationDisplay');
-
-                const today = new Date().toISOString().split('T')[0];
-                dateInput.min = today;
-
-                dateInput.addEventListener('change', () => {
-                    const selected = new Date(dateInput.value);
-                    const now = new Date();
-                    now.setHours(0,0,0,0);
-
-                    const diff = Math.ceil((selected-now)/(1000*60*60*24));
-                    display.textContent = diff > 0 ? diff : 0;
-                });
-            },
-            preConfirm: () => {
-                const value = document.getElementById('endDate').value;
-                if (!value) {
-                    Swal.showValidationMessage("Select date");
-                    return false;
-                }
-
-                const d = new Date(value);
-                return Date.UTC(
-                    d.getFullYear(),
-                    d.getMonth(),
-                    d.getDate(),
-                    0,0,0,0
-                );
-            }
-        });
-
-        if (!custom.isConfirmed) return;
-
-        isCustom = true;
-        expiryDate = custom.value;
-    }
-
-    const requestBody = {
-        license_key: licenseKey,
-        duration: duration,
-        custom: isCustom
-    };
-
-    if (isCustom) {
-        requestBody.expiryDate = expiryDate;
-    }
-
-    try {
-        const res = await fetch(`${API}/api/extend_license`, {
-            method: "POST",
-            headers: {
-                ...adminHeaders(),
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(requestBody)
-        });
-
-        const data = await res.json();
-
-        if (!res.ok) {
-            showToast(data.error || "Extension failed", true);
-            return;
-        }
-
-        showToast("License extended successfully");
-        await loadLicenses();
-
-    } catch (e) {
-        showToast("Network error", true);
-    }
-}
-
-
-async function renewLicense(licenseKey) {
-    if (!confirm(`Renew license ${licenseKey.substring(0,8)}…?`)) return;
-    
-    try {
-        const res = await fetch(`${API}/api/renew_license`, {
-            method: "POST",
-            headers: {
-                ...adminHeaders(),
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ license_key: licenseKey })
-        });
-        
-        const data = await res.json();
-        
-        if (!res.ok) {
-            const errorMsg = data.message || data.error || `HTTP ${res.status}`;
-            showToast(`Renewal failed: ${errorMsg}`, true);
-            return;
-        }
-        
-        if (data.success) {
-            showToast(`License ${licenseKey.substring(0,8)}… renewed successfully`);
-            await loadLicenses(); // Refresh the list
-        }
-    } catch (error) {
-        console.error('License renewal error:', error);
-        showToast("Network or server error", true);
-    }
-}
 // ========= REVOKE =========
 async function revoke(licenseKey) {
   if (!confirm(`Revoke license ${licenseKey.substring(0,8)}…?`)) return;
@@ -527,21 +363,12 @@ async function loadPlans() {
   try {
     const res = await fetch(`${API}/admin/plans`, { headers: adminHeaders() });
     const data = await res.json();
-    console.log(data);
-    const select = document.getElementById("plan_id");
-    select.innerHTML = "<option value=''>Select Plan</option>";
-    data.forEach(p => {
-      const opt = document.createElement("option");
-      opt.value = p.id;
-      opt.innerText = `${p.name} `;
-      select.appendChild(opt);
-    });
-
+    // No-op: plans panel removed from UI
   } catch (e) {
     // Ignore – plans might not be set up
   }
 }
-loadPlans();
+
 // ========= UTILS =========
 function copyKey(key) {
   navigator.clipboard.writeText(key).then(() => showToast("Copied!"));
