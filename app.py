@@ -30,8 +30,7 @@ DB_USER     = os.environ.get("DB_USER")
 DB_PASS     = os.environ.get("DB_PASS")          # never hardcode!
 ADMIN_KEY   = os.environ.get("ADMIN_KEY")          # must be set in production
 SECRET      = os.environ.get("LICENSE_SECRET")       # must be set in production
-GRACE_DAYS  = int(os.environ.get("GRACE_DAYS"))
-
+GRACE_DAYS = int(os.environ.get("GRACE_DAYS", 30))
 # Warn loudly if critical secrets are missing
 if not SECRET:
     logging.warning("WARNING: LICENSE_SECRET env var not set. Use a strong secret in production!")
